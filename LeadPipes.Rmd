@@ -1,0 +1,335 @@
+---
+title: "LeadPiping"
+output: github_document
+---
+
+```{r}
+# Libraries
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(rgdal) # Read shape file 
+library(broom) # 'fortify' the data to get a dataframe format required by ggplot2
+library(viridis)
+library(ggcorrplot) # Visualization of a correlation matrix
+library(mgcv)
+library(ggpubr)
+library(cvTools)
+library(stargazer) # Output regression estimate
+```
+
+## Import data
+```{r setup, include=FALSE}
+LeadPipes <- read_csv("LeadPipes.csv")
+LeadPipes = LeadPipes %>%
+  mutate(StreetPostcode = as.factor(StreetPostcode),
+         WOAName = as.factor(WOAName),
+         Region = as.factor(Region),
+         # Convert the absence/presence of lead contamination into a numerical 0/1 variable based on LeadPresence
+         LeadContaminated = ifelse(LeadPresence > 0, 1, 0))
+```
+
+## Add lat and long to the dataframe LeadPipes
+```{r}
+ukgrid  <- "+init=epsg:27700"
+latlong <- "+init=epsg:4326"
+
+# Create a SpatialPoints object using the sp package
+sp <- SpatialPoints(LeadPipes[, c("Easting", "Northing")], proj4string = CRS(ukgrid))
+
+# Transform the british national grid coordinates in sp to geographic coordinates using spTransform()
+spt <- spTransform(sp, latlong)
+
+# Add the longitude and latitude variables to the data frame LeadPipes
+LeadPipes[, c("long", "lat")] <- coordinates(spt)
+LeadPipes
+```
+
+
+# Plot Scotland map for visualization of lead contamination
+```{r}
+# Download the shapefile for Scotland from NHS
+download.file("http://sedsh127.sedsh.gov.uk/Atom_data/ScotGov/ZippedShapefiles/SG_NHS_HealthBoards_2019.zip" , destfile="DATA/SG_NHS_HealthBoards_2019.zip")
+
+# Unzip this file
+system("unzip DATA/SG_NHS_HealthBoards_2019.zip")
+
+# Read shape file for Scotland map
+scotland <- readOGR(dsn = "DATA/SG_NHS_HealthBoards_2019", 
+                     layer = "SG_NHS_HealthBoards_2019")
+
+# 'fortify' the data to get a dataframe format required by ggplot2
+scotland_tidy <- tidy(scotland)
+
+# Plot LeadMeasurement and LeadPresence on the same map
+ggplot() +
+  geom_polygon(data=scotland_tidy, aes(x = long, y = lat, group = group), color = "black", size = 0.1, fill = "lightgrey") +
+  geom_point(data=LeadPipes, aes(x = Easting, y = Northing, alpha = 0.5, color = LeadMeasurement, size = LeadPresence )) +
+  scale_size_continuous(range=c(1,12)) +
+  scale_color_viridis(trans="log") +
+  coord_equal() +
+  theme_void() +
+  guides(alpha = FALSE) +
+  labs(color = expression(paste("Average lead concentration (in ",mu,"g per litre)")), size = expression(paste("Total number of samples \n (lead concentration >= 1", mu, "g per litre)")))
+```
+
+
+# Plot correlation matrix
+```{r}
+# Select interested covariates
+cor.LeadPipes = LeadPipes %>%
+  select(-c(CensusHouseholdCount2011, LeadMeasurement, MedianHouseAge, BuildYearRounded, TotalPoints, LeadProportion, long, lat))
+
+corr <- round(cor(cor.LeadPipes[sapply(cor.LeadPipes, is.numeric)]), 1)
+ggcorrplot(corr, type = "lower", lab = TRUE)
+```
+
+
+## Explanatory analysis
+
+# numeric variables
+
+```{r}
+ggplot(LeadPipes, aes(x = factor(UrbanRural), y = LeadPresence)) +
+  geom_boxplot() +
+  xlab("The Urban/Rural location class of location") +
+  ylab("The number of samples detected lead")
+```
+
+
+
+```{r}
+ggplot(LeadPipes, aes(x = factor(ReplacedPipes), y = LeadPresence, color = factor(ReplacedPipes))) +
+ geom_boxplot() +
+  guides(color = FALSE) +
+ xlab("Indicator for the replacement of pipes \n (0 = not replaced, 1 = replaced)") +
+ ylab("The number of samples detected lead")
+```
+
+```{r}
+p1 = ggplot(LeadPipes, aes(x = Phosphorus, y = LeadMeasurement)) +
+ geom_point(alpha = 0.15, color = "blue") +
+ xlab("Amount of orthophosphate dosing") +
+ ylab(expression(paste("Average measured lead concentration (",mu,"g per litre)"))) + 
+  geom_hline(yintercept=1, linetype="dashed", color = "red")
+
+p2 = ggplot(LeadPipes, aes(x = factor(LeadContaminated), y = Phosphorus, color = factor(LeadContaminated))) +
+ geom_boxplot() +
+  guides(color = FALSE) +
+ xlab("Indicator for lead contamination \n (0 = absense, 1 = presence)") +
+ ylab("Amount of orthophosphate dosing")
+ggarrange(p1,p2, widths = c(2, 1))
+```
+
+
+```{r}
+p3 = ggplot(LeadPipes, aes(x = BuiltAfter1970, y = LeadMeasurement)) +
+ geom_point(alpha = 0.15, color = "blue") +
+ xlab("Proportion of houses built after 1970") +
+ ylab(expression(paste("Average measured lead concentration (",mu,"g per litre)"))) + 
+  geom_hline(yintercept=1, linetype="dashed", color = "red")
+
+p4 = ggplot(LeadPipes, aes(x = factor(LeadContaminated), y = BuiltAfter1970, color = factor(LeadContaminated))) +
+ geom_boxplot() +
+  guides(color = FALSE) +
+ xlab("Indicator for lead contamination \n (0 = absense, 1 = presence)") +
+ ylab("Proportion of houses built after 1970")
+ggarrange(p3,p4, widths = c(2, 1))
+```
+
+```{r}
+p5 = ggplot(LeadPipes, aes(x = BuildYear, y = LeadMeasurement)) +
+ geom_point(alpha = 0.15, color = "blue") +
+ xlab("Average building year") +
+ ylab(expression(paste("Average measured lead concentration (",mu,"g per litre)"))) + 
+  geom_hline(yintercept=1, linetype="dashed", color = "red") +
+  geom_vline(xintercept = 1970, linetype = "dotted", 
+                color = "blue", size = 0.5)
+
+p6 = ggplot(LeadPipes, aes(x = factor(LeadContaminated), y = BuildYear, color = factor(LeadContaminated))) +
+ geom_boxplot() +
+  guides(color = FALSE) +
+ xlab("Indicator for lead contamination \n (0 = absense, 1 = presence)") +
+ ylab("Average building year")
+ggarrange(p5,p6, widths = c(2, 1))
+```
+
+```{r}
+ggplot(LeadPipes, aes(x = MeanHouseAge, y = LeadMeasurement)) +
+ geom_point(alpha = 0.15, color = "blue") +
+ xlab("Average time") +
+ ylab("Average measured lead concentration(g per litre)")
+```
+
+
+```{r}
+nrFolds <- 5
+BS_1 <- numeric(nrFolds)
+BS_2 <- numeric(nrFolds)
+BS_3 <- numeric(nrFolds)
+BS_4 <- numeric(nrFolds)
+BS_5 <- numeric(nrFolds)
+BS_6 <- numeric(nrFolds)
+BS_7 <- numeric(nrFolds)
+BS_8 <- numeric(nrFolds)
+
+
+# generate array containing fold-number for each sample (row)
+folds <- cvFolds(NROW(LeadPipes), K=nrFolds)
+```
+
+GLM
+```{r}
+# Follow a binomial dsitribution
+for(i in 1:nrFolds){
+  train <- LeadPipes[folds$subsets[folds$which != i], ] #Set the training set
+  validation <- LeadPipes[folds$subsets[folds$which == i], ] #Set the validation set
+  model_1 <- glm(cbind(LeadPresence, TotalPoints - LeadPresence) ~ BuiltAfter1970 + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  model_2 <- glm(LeadContaminated ~ BuiltAfter1970 + UrbanRural + Phosphorus+ BuildYear + MeanHouseAge, data = train, family = binomial)
+  
+  pred_1 <- predict(model_1, newdata=validation, type = "response")
+  pred_2 <- predict(model_2, newdata = validation, type = "response")
+  
+  #convert p into q in the binomial model
+  pred.convert1 <- 1-(1-pred_1)^validation$TotalPoints
+  
+  # Calculate Brier Score
+  BS_1[i] <- mean((pred.convert1 - validation$LeadContaminated)^2)
+  BS_2[i] <- mean((pred_2 - validation$LeadContaminated)^2)
+}
+
+# The average Brier score
+mean(BS_1) #[1] 0.1902626
+mean(BS_2) #[1] 0.1996254
+```
+
+spatial model with a binomial distribution
+```{r}
+for(i in 1:nrFolds){
+  train <- LeadPipes[folds$subsets[folds$which != i], ] #Set the training set
+  validation <- LeadPipes[folds$subsets[folds$which == i], ] #Set the validation set
+  # WOAName RE #the best model
+  model_3 <- gam(cbind(LeadPresence, TotalPoints - LeadPresence) ~ BuiltAfter1970 + s(WOAName, bs = "re") + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  # Region RE
+  model_4 <- gam(cbind(LeadPresence, TotalPoints - LeadPresence) ~ BuiltAfter1970 + s(Region, bs = "re") + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  # a spatial smoother
+  model_5 <- gam(cbind(LeadPresence, TotalPoints - LeadPresence) ~ BuiltAfter1970 + s(Easting, Northing, k=100) + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  
+  pred_3 <- predict(model_3,newdata=validation, type = "response") 
+  pred_4 <- predict(model_4,newdata=validation, type = "response") 
+  pred_5 <- predict(model_5,newdata=validation, type = "response")
+  
+  # convert p into q
+  pred.convert3 <- 1-(1-pred_3)^validation$TotalPoints
+  pred.convert4 <- 1-(1-pred_4)^validation$TotalPoints
+  pred.convert5 <- 1-(1-pred_5)^validation$TotalPoints
+  # Calculate Brier Score
+  BS_3[i] <- mean((pred.convert3 - validation$LeadContaminated)^2)
+  BS_4[i] <- mean((pred.convert4 - validation$LeadContaminated)^2)
+  BS_5[i] <- mean((pred.convert5 - validation$LeadContaminated)^2)
+}
+
+mean(BS_3)
+mean(BS_4)
+mean(BS_5)
+# [1] 0.182483
+# [1] 0.1918319
+# [1] 0.2193152
+```
+
+spatial model with a Bernoulli distribution
+```{r}
+# GLMM with WOAName RE
+for(i in 1:nrFolds){
+  train <- LeadPipes[folds$subsets[folds$which != i], ] #Set the training set
+  validation <- LeadPipes[folds$subsets[folds$which == i], ] #Set the validation set
+  # WOAName RE
+  model_6 <- gam(LeadContaminated ~ BuiltAfter1970 + s(WOAName, bs = "re") + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  # Region RE
+  model_7 <- gam(LeadContaminated ~ BuiltAfter1970+s(Region, bs = "re") + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial)
+  # a spatial smoother
+  model_8 <- gam(LeadContaminated ~ BuiltAfter1970 + s(Easting, Northing, k=100) + UrbanRural + Phosphorus + MeanHouseAge, data = train, family = binomial) 
+  
+  pred_6 <- predict(model_6, newdata = validation, type = "response")
+  pred_7 <- predict(model_7, newdata = validation, type = "response")
+  pred_8 <- predict(model_8, newdata = validation, type = "response")
+  # Calculate Brier Score
+  BS_6[i] <- mean((pred_6 - validation$LeadContaminated)^2)
+  BS_7[i] <- mean((pred_7 - validation$LeadContaminated)^2)
+  BS_8[i] <- mean((pred_8 - validation$LeadContaminated)^2)
+}
+
+mean(BS_6)
+mean(BS_7)
+mean(BS_8)
+# [1] 0.1985301
+# [1] 0.200291
+# [1] 0.2893984
+
+var(BS_1)
+var(BS_2) #minimum
+var(BS_3)
+var(BS_4)
+var(BS_5)
+var(BS_6)
+var(BS_7)
+var(BS_8)
+# [1] 0.0007937225
+# [1] 0.0003290356
+# [1] 0.002195615
+# [1] 0.0006730011
+# [1] 0.003232067
+# [1] 0.001144658
+# [1] 0.0004424858
+# [1] 0.01473555
+```
+
+plot of the average Brier score in each fold for each model
+```{r}
+#[1] 0.1902626
+#[1] 0.1996254
+# [1] 0.182483
+# [1] 0.1918319
+# [1] 0.2193152
+# [1] 0.1985301
+# [1] 0.200291
+# [1] 0.2893984
+Binomial.Bs <- data.frame(fold = 1:5, cbind(BS_1, BS_2, BS_3, BS_4, BS_5, BS_6, BS_7, BS_8))
+Binomial.Bs1 <-  tidyr::pivot_longer(Binomial.Bs, cols = BS_1:BS_8,
+                    names_to = "Models",
+                    values_to = "Scores")
+ggplot(Binomial.Bs1, aes(x = fold, y = Scores, color = Models)) + 
+  geom_line() + 
+  ylab("Brier score") +
+  scale_colour_discrete(breaks=c("BS_1", "BS_2", "BS_3", "BS_4", "BS_5", "BS_6", "BS_7", "BS_8"),
+                         labels=c("model 1", "model 2", "model 3", "model 4", "model 5", "model 6", "model 7", "model 8"))
+```
+
+The best Model 3
+```{r}
+Model3 <- gam(cbind(LeadPresence, TotalPoints - LeadPresence) ~ BuiltAfter1970 + s(WOAName, bs = "re") + UrbanRural + Phosphorus + MeanHouseAge, data = LeadPipes, family = binomial)
+summary(Model3)
+
+predpro <- predict(Model3, type = "response")
+pred.convert <- 1-(1-predpro)^LeadPipes$TotalPoints
+
+# Calculate the average Brier Score
+ave.BS <- mean((pred.convert - LeadPipes$LeadContaminated)^2)
+# [1] 0.1240927
+
+beta <- coef(Model3)
+round(exp(beta[0:5]),4)
+  # (Intercept) BuiltAfter1970     UrbanRural     Phosphorus   MeanHouseAge 
+  #       0.3187         0.3674         0.9172         0.9994         1.0069 
+```
+
+output the results
+```{r}
+stargazer(Model3, keep = c("Constant", "BuiltAfter1970", "UrbanRural", "Phosphorus", "MeanHouseAge"))
+```
+
+preform model checking
+```{r}
+qq.gam(Model3)
+```
+
